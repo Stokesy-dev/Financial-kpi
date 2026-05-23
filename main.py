@@ -3,7 +3,7 @@ import argparse
 import pandas as pd
 from data.generate_data import generate_synthetic_data
 from database.db_interface import init_db, insert_transactions, query_aggregated_metrics
-from models.forecasting import train_and_forecast_classical
+from models.forecasting import train_and_forecast_all
 from models.feature_engineering import create_forecasting_features
 
 def main():
@@ -101,25 +101,27 @@ def main():
             print("❌ Error: No records found in database matching criteria.")
             return
             
-        print("🧠 Fitting Prophet and ARIMA forecasting models...")
-        forecast_results = train_and_forecast_classical(df_metric, forecast_horizon=90)
+        print("🧠 Fitting Prophet, ARIMA, and Tabular Random Forest models...")
+        forecast_results = train_and_forecast_all(df_metric, forecast_horizon=90)
         
         # Print metrics
         print("\n📈 Model Comparison Performance Metrics (Held-out Quarter Validation):")
         metrics = forecast_results['metrics']
-        print(f"   Prophet MAE : {metrics['prophet']['MAE']:,.2f}")
-        print(f"   Prophet RMSE: {metrics['prophet']['RMSE']:,.2f}")
-        print(f"   ARIMA MAE   : {metrics['arima']['MAE']:,.2f}")
-        print(f"   ARIMA RMSE  : {metrics['arima']['RMSE']:,.2f}")
+        print(f"   Prophet MAE : {metrics['prophet']['MAE']:,.2f} | RMSE: {metrics['prophet']['RMSE']:,.2f}")
+        print(f"   ARIMA MAE   : {metrics['arima']['MAE']:,.2f} | RMSE: {metrics['arima']['RMSE']:,.2f}")
+        print(f"   RF MAE      : {metrics['rf']['MAE']:,.2f} | RMSE: {metrics['rf']['RMSE']:,.2f}")
         
         # Display sample future forecast
         print("\n🔮 Sample Future Forecast (Next 90 Days starting 2026-01-01):")
         p_fut = forecast_results['prophet_future'].head(3)
         a_fut = forecast_results['arima_future'].head(3)
+        rf_fut = forecast_results['rf_future'].head(3)
         print("   --- Prophet Forecast ---")
         print(p_fut.to_string(index=False))
         print("   --- ARIMA Forecast ---")
         print(a_fut.to_string(index=False))
+        print("   --- Random Forest Forecast ---")
+        print(rf_fut.to_string(index=False))
         
     elif args.mode == "anomaly":
         print(f"🛠️ Mode '{args.mode}' has been recognized.")

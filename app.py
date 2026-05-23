@@ -5,7 +5,7 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 from data.generate_data import generate_synthetic_data
-from models.forecasting import train_and_forecast_classical
+from models.forecasting import train_and_forecast_all
 from database.db_interface import init_db, insert_transactions, query_aggregated_metrics
 
 # Page configuration
@@ -113,7 +113,7 @@ bootstrapped = bootstrap_database(DB_PATH)
 @st.cache_data(show_spinner=False)
 def run_forecast_pipeline(df_data):
     """Fitted models run and results are cached to ensure dashboard interactivity."""
-    return train_and_forecast_classical(df_data, forecast_horizon=90)
+    return train_and_forecast_all(df_data, forecast_horizon=90)
 
 # Main layout header
 st.markdown("""
@@ -223,7 +223,7 @@ with tab1:
         
         st.info("💡 Note: The metrics displayed above are queried dynamically from the database and aggregated on-the-fly.")
 
-# TAB 2: Forecast Projection (Prophet vs ARIMA models)
+# TAB 2: Forecast Projection (Prophet, ARIMA, and Random Forest models)
 with tab2:
     st.markdown("### Forecasting Models Comparison & Projection")
     
@@ -235,8 +235,8 @@ with tab2:
         with col_opts:
             models_to_show = st.multiselect(
                 "Select Models to Display", 
-                options=["Prophet", "ARIMA"], 
-                default=["Prophet", "ARIMA"]
+                options=["Prophet", "ARIMA", "Random Forest (ML)"], 
+                default=["Prophet", "ARIMA", "Random Forest (ML)"]
             )
             
         # Run forecasting pipeline (cached)
@@ -266,7 +266,7 @@ with tab2:
                 x=p_val['Date'],
                 y=p_val['Value'],
                 mode='lines',
-                name='Prophet (Validation Forecast)',
+                name='Prophet (Validation)',
                 line=dict(color='#06b6d4', width=2, dash='dash'),
                 hovertemplate='Date: %{x}<br>Prophet Val: %{y:,.2f}<extra></extra>'
             ))
@@ -276,7 +276,7 @@ with tab2:
                 x=p_fut['Date'],
                 y=p_fut['Value'],
                 mode='lines',
-                name='Prophet (90d Future Projection)',
+                name='Prophet (90d Projection)',
                 line=dict(color='#06b6d4', width=2.5),
                 hovertemplate='Date: %{x}<br>Prophet Forecast: %{y:,.2f}<extra></extra>'
             ))
@@ -303,7 +303,7 @@ with tab2:
                 x=a_val['Date'],
                 y=a_val['Value'],
                 mode='lines',
-                name='ARIMA (Validation Forecast)',
+                name='ARIMA (Validation)',
                 line=dict(color='#f97316', width=2, dash='dash'),
                 hovertemplate='Date: %{x}<br>ARIMA Val: %{y:,.2f}<extra></extra>'
             ))
@@ -313,7 +313,7 @@ with tab2:
                 x=a_fut['Date'],
                 y=a_fut['Value'],
                 mode='lines',
-                name='ARIMA (90d Future Projection)',
+                name='ARIMA (90d Projection)',
                 line=dict(color='#f97316', width=2.5),
                 hovertemplate='Date: %{x}<br>ARIMA Forecast: %{y:,.2f}<extra></extra>'
             ))
@@ -328,6 +328,43 @@ with tab2:
                 hoverinfo="skip",
                 showlegend=False,
                 name='ARIMA 95% CI'
+            ))
+            
+        # 4. Random Forest traces
+        if "Random Forest (ML)" in models_to_show:
+            r_val = forecasts['rf_val']
+            r_fut = forecasts['rf_future']
+            
+            # Validation period (dashed line)
+            fig.add_trace(go.Scatter(
+                x=r_val['Date'],
+                y=r_val['Value'],
+                mode='lines',
+                name='Random Forest (Validation)',
+                line=dict(color='#10b981', width=2, dash='dash'),
+                hovertemplate='Date: %{x}<br>RF Val: %{y:,.2f}<extra></extra>'
+            ))
+            
+            # Future Forecast (solid line)
+            fig.add_trace(go.Scatter(
+                x=r_fut['Date'],
+                y=r_fut['Value'],
+                mode='lines',
+                name='Random Forest (90d Projection)',
+                line=dict(color='#10b981', width=2.5),
+                hovertemplate='Date: %{x}<br>RF Forecast: %{y:,.2f}<extra></extra>'
+            ))
+            
+            # Confidence Interval shading
+            fig.add_trace(go.Scatter(
+                x=list(r_fut['Date']) + list(r_fut['Date'])[::-1],
+                y=list(r_fut['Upper']) + list(r_fut['Lower'])[::-1],
+                fill='toself',
+                fillcolor='rgba(16, 185, 129, 0.08)',
+                line=dict(color='rgba(255,255,255,0)'),
+                hoverinfo="skip",
+                showlegend=False,
+                name='Random Forest 95% CI'
             ))
             
         # Style layout for premium UI
@@ -362,7 +399,7 @@ with tab2:
         st.markdown("<h4 style='font-weight:600; margin-top:1.5rem;'>Model Accuracy Comparison (Validation Set)</h4>", unsafe_allow_html=True)
         st.markdown("Metrics are evaluated on the final 90-day held-out quarter against clean baseline targets:")
         
-        col_m1, col_m2 = st.columns(2)
+        col_m1, col_m2, col_m3 = st.columns(3)
         with col_m1:
             st.markdown(f"""
             <div style="background:rgba(6, 182, 212, 0.08); border-left:4px solid #06b6d4; padding:1rem; border-radius:4px;">
@@ -381,19 +418,141 @@ with tab2:
             </div>
             """, unsafe_allow_html=True)
             
+        with col_m3:
+            st.markdown(f"""
+            <div style="background:rgba(16, 185, 129, 0.08); border-left:4px solid #10b981; padding:1rem; border-radius:4px;">
+                <h5 style="margin:0 0 0.5rem 0; color:#10b981; font-weight:600;">🌲 Random Forest (ML)</h5>
+                <p style="margin:2px 0;"><b>MAE:</b> {metrics['rf']['MAE']:,.2f}</p>
+                <p style="margin:2px 0;"><b>RMSE:</b> {metrics['rf']['RMSE']:,.2f}</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
         # Summary Box
-        better_model = "Prophet" if metrics['prophet']['MAE'] < metrics['arima']['MAE'] else "ARIMA"
-        lower_mae = min(metrics['prophet']['MAE'], metrics['arima']['MAE'])
-        st.success(f"🏆 **{better_model}** has a lower MAE of **{lower_mae:,.2f}** on the validation quarter, indicating it is currently the best fit for this metric's trend.")
-        
-        st.info("💡 Note: The Tabular Machine Learning Forecast (Random Forest) and interactive SHAP explainability will be integrated in the next slice (Issue #5).")
+        model_maes = {
+            'Prophet': metrics['prophet']['MAE'],
+            'ARIMA': metrics['arima']['MAE'],
+            'Random Forest (ML)': metrics['rf']['MAE']
+        }
+        best_model = min(model_maes, key=model_maes.get)
+        lower_mae = model_maes[best_model]
+        st.success(f"🏆 **{best_model}** has the lowest MAE of **{lower_mae:,.2f}** on the validation quarter, indicating it has the lowest prediction error.")
 
 # TAB 3: Anomaly Dashboard (Stub)
 with tab3:
     st.markdown("### Anomaly Detection Control Room")
     st.info("⚠️ Anomaly detection layers (Isolation Forest and Z-Score thresholding) are coming soon in Issue #6 and Issue #7.")
 
-# TAB 4: Explainability (Stub)
+# TAB 4: Explainability (SHAP)
 with tab4:
-    st.markdown("### Explainable AI Predictions (SHAP)")
-    st.info("🧠 Interactive SHAP explanations and waterfall charts will be integrated in Issue #5.")
+    st.markdown("### Explainable AI Predictions (SHAP Waterfall Plots)")
+    
+    if df_metric.empty:
+        st.warning("No data found for the selected options.")
+    else:
+        # Load pre-computed forecasts containing SHAP data
+        forecasts = run_forecast_pipeline(df_metric)
+        shap_data = forecasts['shap_data']
+        
+        st.markdown("""
+        To build trust and provide transparency, this explainability layer displays a **SHAP Waterfall Plot** for any selected date.
+        The plot decomposes a single day's forecast to show how much each individual engineered feature (lags, rolling averages, calendar cycles) 
+        shifted the prediction away from the model's base value (average forecast).
+        """)
+        
+        # Date selection
+        selected_date = st.selectbox(
+            "Select Forecast Date to Analyze",
+            options=shap_data['dates'],
+            index=14  # Default to middle of first month
+        )
+        
+        # Extract indices and values
+        date_idx = shap_data['dates'].index(selected_date)
+        vals = shap_data['values'][date_idx]
+        raw_feats = shap_data['data'][date_idx]
+        base_val = shap_data['base_value']
+        feature_names = shap_data['feature_names']
+        
+        model_pred = base_val + sum(vals)
+        
+        # Sort features by absolute SHAP contribution
+        sorted_indices = sorted(range(len(vals)), key=lambda k: abs(vals[k]), reverse=True)
+        
+        measure = ["absolute"]
+        x_labels = ["Model Base (Avg)"]
+        y_deltas = [base_val]
+        text_labels = [f"{base_val:,.2f}"]
+        
+        for idx in sorted_indices:
+            feat_name = feature_names[idx]
+            feat_val = raw_feats[idx]
+            shap_val = vals[idx]
+            
+            friendly_name = {
+                'lag_1': 'Lag 1 Day',
+                'lag_7': 'Lag 7 Days',
+                'lag_30': 'Lag 30 Days',
+                'rolling_mean_7': '7d Rolling Avg',
+                'rolling_mean_30': '30d Rolling Avg',
+                'dayofweek': 'Day of Week',
+                'month': 'Month'
+            }.get(feat_name, feat_name)
+            
+            # Map raw values to readable formats for day/month
+            if feat_name == 'dayofweek':
+                day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+                raw_val_str = day_names[int(feat_val)]
+            elif feat_name == 'month':
+                month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+                raw_val_str = month_names[int(feat_val) - 1]
+            else:
+                raw_val_str = f"{feat_val:,.2f}"
+                
+            measure.append("relative")
+            x_labels.append(f"{friendly_name}<br>({raw_val_str})")
+            y_deltas.append(shap_val)
+            text_labels.append(f"{'+' if shap_val > 0 else ''}{shap_val:,.2f}")
+            
+        measure.append("total")
+        x_labels.append("Final Forecast")
+        y_deltas.append(0)
+        text_labels.append(f"{model_pred:,.2f}")
+        
+        fig_waterfall = go.Figure(go.Waterfall(
+            name="SHAP Explainability",
+            orientation="v",
+            measure=measure,
+            x=x_labels,
+            y=y_deltas,
+            text=text_labels,
+            textposition="outside",
+            connector=dict(line=dict(color="rgba(255,255,255,0.15)", width=1)),
+            decreasing=dict(marker=dict(color="#ef4444")),  # Red for negative contributions
+            increasing=dict(marker=dict(color="#10b981")),  # Green for positive contributions
+            totals=dict(marker=dict(color="#8b5cf6"))        # Violet for final prediction
+        ))
+        
+        fig_waterfall.update_layout(
+            title=dict(
+                text=f"SHAP Waterfall Explanation for {selected_date} Prediction",
+                font=dict(size=18, family="Outfit")
+            ),
+            waterfallgap=0.2,
+            template='plotly_dark',
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            margin=dict(l=20, r=20, t=60, b=20),
+            xaxis=dict(tickangle=0, title="Prediction Drivers"),
+            yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)', title='Forecast Value ($)' if metric in ['revenue', 'cost'] else 'Forecast Volume')
+        )
+        
+        st.plotly_chart(fig_waterfall, use_container_width=True)
+        
+        # Interpretative details
+        st.markdown("#### 🔍 How to read this chart:")
+        st.markdown(f"""
+        - The waterfall begins at the **Model Base** value (**{base_val:,.2f}**), which is the average expected value forecasted by the model.
+        - Each feature bar shows its local attribution. Green bars (**positive values**) pushed the forecast higher, while red bars (**negative values**) dragged the forecast lower.
+        - For example, if **Lag 1 Day** is positive, it means yesterday's strong performance drove today's forecast up.
+        - The **Final Forecast** value (**{model_pred:,.2f}**) is the sum of the base value and all attributions, representing the actual value displayed in the line chart.
+        """)
