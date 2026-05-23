@@ -3,6 +3,7 @@ import argparse
 import pandas as pd
 from data.generate_data import generate_synthetic_data
 from database.db_interface import init_db, insert_transactions, query_aggregated_metrics
+from models.forecasting import train_and_forecast_classical
 from models.feature_engineering import create_forecasting_features
 
 def main():
@@ -86,14 +87,46 @@ def main():
         else:
             print("❌ Diagnostic error: Could not query aggregated metrics from database.")
             
-    elif args.mode in ["forecast", "anomaly"]:
-        # Placeholders for future issues
+    elif args.mode == "forecast":
+        if not args.bu or not args.metric:
+            parser.error("--bu and --metric are required when --mode is 'forecast'.")
+            
+        print(f"🔮 Loading data for Business Unit: '{args.bu}', Metric: '{args.metric}'...")
+        if not os.path.exists(args.db):
+            print(f"❌ Error: Database file '{args.db}' not found. Run --mode generate first.")
+            return
+            
+        df_metric = query_aggregated_metrics(args.db, bu=args.bu, metric=args.metric, frequency="D")
+        if df_metric.empty:
+            print("❌ Error: No records found in database matching criteria.")
+            return
+            
+        print("🧠 Fitting Prophet and ARIMA forecasting models...")
+        forecast_results = train_and_forecast_classical(df_metric, forecast_horizon=90)
+        
+        # Print metrics
+        print("\n📈 Model Comparison Performance Metrics (Held-out Quarter Validation):")
+        metrics = forecast_results['metrics']
+        print(f"   Prophet MAE : {metrics['prophet']['MAE']:,.2f}")
+        print(f"   Prophet RMSE: {metrics['prophet']['RMSE']:,.2f}")
+        print(f"   ARIMA MAE   : {metrics['arima']['MAE']:,.2f}")
+        print(f"   ARIMA RMSE  : {metrics['arima']['RMSE']:,.2f}")
+        
+        # Display sample future forecast
+        print("\n🔮 Sample Future Forecast (Next 90 Days starting 2026-01-01):")
+        p_fut = forecast_results['prophet_future'].head(3)
+        a_fut = forecast_results['arima_future'].head(3)
+        print("   --- Prophet Forecast ---")
+        print(p_fut.to_string(index=False))
+        print("   --- ARIMA Forecast ---")
+        print(a_fut.to_string(index=False))
+        
+    elif args.mode == "anomaly":
         print(f"🛠️ Mode '{args.mode}' has been recognized.")
         print(f"   Business Unit: {args.bu}")
         print(f"   Metric       : {args.metric}")
-        if args.mode == "anomaly":
-            print(f"   Threshold    : {args.threshold}")
-        print(f"🔮 Integration for modeling is coming in the next issues (Issue #4, #5, #6).")
+        print(f"   Threshold    : {args.threshold}")
+        print(f"🔮 Integration for anomaly detection is coming in Issue #6 and Issue #7.")
 
 if __name__ == "__main__":
     main()

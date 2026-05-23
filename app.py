@@ -5,6 +5,7 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 from data.generate_data import generate_synthetic_data
+from models.forecasting import train_and_forecast_classical
 from database.db_interface import init_db, insert_transactions, query_aggregated_metrics
 
 # Page configuration
@@ -107,6 +108,12 @@ def bootstrap_database(db_path):
 
 # Trigger bootstrap
 bootstrapped = bootstrap_database(DB_PATH)
+
+# Forecasting cache helper
+@st.cache_data(show_spinner=False)
+def run_forecast_pipeline(df_data):
+    """Fitted models run and results are cached to ensure dashboard interactivity."""
+    return train_and_forecast_classical(df_data, forecast_horizon=90)
 
 # Main layout header
 st.markdown("""
@@ -216,25 +223,113 @@ with tab1:
         
         st.info("💡 Note: The metrics displayed above are queried dynamically from the database and aggregated on-the-fly.")
 
-# TAB 2: Forecast Projection (Historical Trend Baseline)
+# TAB 2: Forecast Projection (Prophet vs ARIMA models)
 with tab2:
-    st.markdown("### Actual Metrics Trend")
+    st.markdown("### Forecasting Models Comparison & Projection")
     
     if df_metric.empty:
         st.warning("No data found for the selected options.")
     else:
+        # User control to choose models
+        col_opts, col_spacer = st.columns([2, 3])
+        with col_opts:
+            models_to_show = st.multiselect(
+                "Select Models to Display", 
+                options=["Prophet", "ARIMA"], 
+                default=["Prophet", "ARIMA"]
+            )
+            
+        # Run forecasting pipeline (cached)
+        forecasts = run_forecast_pipeline(df_metric)
+        metrics = forecasts['metrics']
+        
         # Create a customized dark-themed Plotly figure
         fig = go.Figure()
         
+        # 1. Historical Actuals
         fig.add_trace(go.Scatter(
             x=df_metric['Date'],
             y=df_metric['Value'],
             mode='lines',
-            name='Actual',
-            line=dict(color='#8b5cf6', width=2.5),
-            hovertemplate='Date: %{x}<br>Value: %{y:,.2f}<extra></extra>'
+            name='Historical Actuals',
+            line=dict(color='#a78bfa', width=2.5),
+            hovertemplate='Date: %{x}<br>Actual: %{y:,.2f}<extra></extra>'
         ))
         
+        # 2. Prophet traces
+        if "Prophet" in models_to_show:
+            p_val = forecasts['prophet_val']
+            p_fut = forecasts['prophet_future']
+            
+            # Validation period (dashed line)
+            fig.add_trace(go.Scatter(
+                x=p_val['Date'],
+                y=p_val['Value'],
+                mode='lines',
+                name='Prophet (Validation Forecast)',
+                line=dict(color='#06b6d4', width=2, dash='dash'),
+                hovertemplate='Date: %{x}<br>Prophet Val: %{y:,.2f}<extra></extra>'
+            ))
+            
+            # Future Forecast (solid line)
+            fig.add_trace(go.Scatter(
+                x=p_fut['Date'],
+                y=p_fut['Value'],
+                mode='lines',
+                name='Prophet (90d Future Projection)',
+                line=dict(color='#06b6d4', width=2.5),
+                hovertemplate='Date: %{x}<br>Prophet Forecast: %{y:,.2f}<extra></extra>'
+            ))
+            
+            # Confidence Interval shading
+            fig.add_trace(go.Scatter(
+                x=list(p_fut['Date']) + list(p_fut['Date'])[::-1],
+                y=list(p_fut['Upper']) + list(p_fut['Lower'])[::-1],
+                fill='toself',
+                fillcolor='rgba(6, 182, 212, 0.1)',
+                line=dict(color='rgba(255,255,255,0)'),
+                hoverinfo="skip",
+                showlegend=False,
+                name='Prophet 95% CI'
+            ))
+            
+        # 3. ARIMA traces
+        if "ARIMA" in models_to_show:
+            a_val = forecasts['arima_val']
+            a_fut = forecasts['arima_future']
+            
+            # Validation period (dashed line)
+            fig.add_trace(go.Scatter(
+                x=a_val['Date'],
+                y=a_val['Value'],
+                mode='lines',
+                name='ARIMA (Validation Forecast)',
+                line=dict(color='#f97316', width=2, dash='dash'),
+                hovertemplate='Date: %{x}<br>ARIMA Val: %{y:,.2f}<extra></extra>'
+            ))
+            
+            # Future Forecast (solid line)
+            fig.add_trace(go.Scatter(
+                x=a_fut['Date'],
+                y=a_fut['Value'],
+                mode='lines',
+                name='ARIMA (90d Future Projection)',
+                line=dict(color='#f97316', width=2.5),
+                hovertemplate='Date: %{x}<br>ARIMA Forecast: %{y:,.2f}<extra></extra>'
+            ))
+            
+            # Confidence Interval shading
+            fig.add_trace(go.Scatter(
+                x=list(a_fut['Date']) + list(a_fut['Date'])[::-1],
+                y=list(a_fut['Upper']) + list(a_fut['Lower'])[::-1],
+                fill='toself',
+                fillcolor='rgba(249, 115, 22, 0.08)',
+                line=dict(color='rgba(255,255,255,0)'),
+                hoverinfo="skip",
+                showlegend=False,
+                name='ARIMA 95% CI'
+            ))
+            
         # Style layout for premium UI
         fig.update_layout(
             template='plotly_dark',
@@ -249,7 +344,7 @@ with tab2:
             yaxis=dict(
                 showgrid=True,
                 gridcolor='rgba(255,255,255,0.05)',
-                title='Metric Value'
+                title='Value'
             ),
             hovermode='x unified',
             legend=dict(
@@ -262,7 +357,36 @@ with tab2:
         )
         
         st.plotly_chart(fig, use_container_width=True)
-        st.info("🔮 Forecasting models (Prophet, ARIMA, and Random Forest) will be integrated in future slices (Issue #4 and Issue #5).")
+        
+        # Display statistical metrics comparison
+        st.markdown("<h4 style='font-weight:600; margin-top:1.5rem;'>Model Accuracy Comparison (Validation Set)</h4>", unsafe_allow_html=True)
+        st.markdown("Metrics are evaluated on the final 90-day held-out quarter against clean baseline targets:")
+        
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            st.markdown(f"""
+            <div style="background:rgba(6, 182, 212, 0.08); border-left:4px solid #06b6d4; padding:1rem; border-radius:4px;">
+                <h5 style="margin:0 0 0.5rem 0; color:#06b6d4; font-weight:600;">🌀 Facebook Prophet</h5>
+                <p style="margin:2px 0;"><b>MAE:</b> {metrics['prophet']['MAE']:,.2f}</p>
+                <p style="margin:2px 0;"><b>RMSE:</b> {metrics['prophet']['RMSE']:,.2f}</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        with col_m2:
+            st.markdown(f"""
+            <div style="background:rgba(249, 115, 22, 0.08); border-left:4px solid #f97316; padding:1rem; border-radius:4px;">
+                <h5 style="margin:0 0 0.5rem 0; color:#f97316; font-weight:600;">📈 ARIMA (SARIMAX)</h5>
+                <p style="margin:2px 0;"><b>MAE:</b> {metrics['arima']['MAE']:,.2f}</p>
+                <p style="margin:2px 0;"><b>RMSE:</b> {metrics['arima']['RMSE']:,.2f}</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        # Summary Box
+        better_model = "Prophet" if metrics['prophet']['MAE'] < metrics['arima']['MAE'] else "ARIMA"
+        lower_mae = min(metrics['prophet']['MAE'], metrics['arima']['MAE'])
+        st.success(f"🏆 **{better_model}** has a lower MAE of **{lower_mae:,.2f}** on the validation quarter, indicating it is currently the best fit for this metric's trend.")
+        
+        st.info("💡 Note: The Tabular Machine Learning Forecast (Random Forest) and interactive SHAP explainability will be integrated in the next slice (Issue #5).")
 
 # TAB 3: Anomaly Dashboard (Stub)
 with tab3:
