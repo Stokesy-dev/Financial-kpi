@@ -15,4 +15,4 @@ Integrate classical time-series forecasting models (Facebook Prophet and statsmo
 
 ## Blocked by
 
-- [Issue 0003: CLI & Feature Engineering Pipeline](file:///Users/sohamwarad/Financial%20KPI/docs/issues/0003-cli-and-feature-engineering-pipeline.md)
+- #3

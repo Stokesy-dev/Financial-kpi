@@ -15,5 +15,5 @@ Implement Scikit-learn's multivariate Isolation Forest in the anomaly detection 
 
 ## Blocked by
 
-- [Issue 0005: Tabular Machine Learning Forecast & Interactive SHAP Explanations](file:///Users/sohamwarad/Financial%20KPI/docs/issues/0005-tree-based-forecasting-and-shap-explainability.md)
-- [Issue 0006: Anomaly Injection & Univariate Z-Score Flagging](file:///Users/sohamwarad/Financial%20KPI/docs/issues/0006-anomaly-injection-and-univariate-zscore.md)
+- #5
+- #6

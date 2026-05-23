@@ -13,4 +13,4 @@ Build the `feature_engineering` module to transform time-series metrics into a t
 
 ## Blocked by
 
-- [Issue 0002: Multi-BU & Multi-Metric Extension](file:///Users/sohamwarad/Financial%20KPI/docs/issues/0002-multi-bu-multi-metric-extension.md)
+- #2

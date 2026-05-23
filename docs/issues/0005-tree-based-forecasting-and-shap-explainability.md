@@ -14,4 +14,4 @@ Implement the machine learning forecasting and explainability layer. Train a Tab
 
 ## Blocked by
 
-- [Issue 0004: Classical Time-Series Forecasting](file:///Users/sohamwarad/Financial%20KPI/docs/issues/0004-classical-time-series-forecasting.md)
+- #4

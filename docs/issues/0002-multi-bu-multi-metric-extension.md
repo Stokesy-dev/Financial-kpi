@@ -14,4 +14,4 @@ Extend the data generation and database layers to support SaaS (characterized by
 
 ## Blocked by
 
-- [Issue 0001: Baseline E-commerce Revenue Dashboard](file:///Users/sohamwarad/Financial%20KPI/docs/issues/0001-baseline-ecommerce-revenue-dashboard.md)
+- #1
