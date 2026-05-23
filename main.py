@@ -5,7 +5,7 @@ from data.generate_data import generate_synthetic_data
 from database.db_interface import init_db, insert_transactions, query_aggregated_metrics
 from models.forecasting import train_and_forecast_all
 from models.feature_engineering import create_forecasting_features
-from models.anomaly_detection import compute_univariate_zscore_anomalies
+from models.anomaly_detection import compute_univariate_zscore_anomalies, compute_combined_anomalies
 
 def main():
     parser = argparse.ArgumentParser(description="Financial KPI Pipeline CLI")
@@ -130,33 +130,38 @@ def main():
             return
 
         threshold_map = {
-            'strict': 3.5,
-            'standard': 3.0,
-            'lenient': 2.0
+            'strict': (3.5, 0.01),
+            'standard': (3.0, 0.03),
+            'lenient': (2.0, 0.05)
         }
-        threshold_val = threshold_map.get(args.threshold or 'standard', 3.0)
+        z_thresh, if_contamination = threshold_map.get(args.threshold or 'standard', (3.0, 0.03))
         
         bus = [args.bu] if args.bu else ["ecommerce", "saas", "enterprise"]
-        metrics = [args.metric] if args.metric else ["revenue", "cost", "volume"]
         
-        print(f"⚠️ Running Anomaly Detection Pipeline (Threshold: {args.threshold or 'standard'} [Z-Score > {threshold_val}])...")
+        print(f"⚠️ Running Multivariate Anomaly Detection Pipeline (Threshold: {args.threshold or 'standard'} [Z-Score > {z_thresh}, IForest Contamination = {if_contamination * 100:.0f}%])...")
         
         total_anomalies = 0
         for bu in bus:
-            for metric in metrics:
-                df_metric = query_aggregated_metrics(args.db, bu=bu, metric=metric, frequency="D", reindex_all_dates=True)
-                if df_metric.empty:
-                    continue
+            df_revenue = query_aggregated_metrics(args.db, bu=bu, metric='revenue', frequency="D", reindex_all_dates=True)
+            df_cost = query_aggregated_metrics(args.db, bu=bu, metric='cost', frequency="D", reindex_all_dates=True)
+            df_volume = query_aggregated_metrics(args.db, bu=bu, metric='volume', frequency="D", reindex_all_dates=True)
+            
+            if df_revenue.empty or df_cost.empty or df_volume.empty:
+                continue
                 
-                df_detected = compute_univariate_zscore_anomalies(df_metric, window=30, threshold=threshold_val)
-                anomalies = df_detected[df_detected['Is_Anomaly'] == 1]
+            df_combined = compute_combined_anomalies(df_revenue, df_cost, df_volume, z_threshold=z_thresh, contamination=if_contamination)
+            anomalies = df_combined[df_combined['Confidence'] != 'None']
+            
+            if not anomalies.empty:
+                print(f"\n🚨 Business Unit: '{bu.upper()}' ({len(anomalies)} flagged events):")
+                print("-" * 112)
+                print(f"{'Date':<12} | {'Revenue':<12} | {'Cost':<12} | {'Volume':<8} | {'Z-Rev':<5} | {'Z-Cst':<5} | {'Z-Vol':<5} | {'IForest':<7} | {'Confidence':<10}")
+                print("-" * 112)
+                for _, row in anomalies.iterrows():
+                    print(f"{row['Date']:<12} | {row['Revenue']:>12,.2f} | {row['Cost']:>12,.2f} | {row['Volume']:>8.0f} | {int(row['Z_Rev_Anomaly']):^5} | {int(row['Z_Cst_Anomaly']):^5} | {int(row['Z_Vol_Anomaly']):^5} | {int(row['IForest_Anomaly']):^7} | {row['Confidence']:<10}")
+                print("-" * 112)
+                total_anomalies += len(anomalies)
                 
-                if not anomalies.empty:
-                    print(f"\n🚨 Business Unit: '{bu.upper()}', Metric: '{metric.upper()}' ({len(anomalies)} flagged):")
-                    for _, row in anomalies.iterrows():
-                        print(f"   Date: {row['Date']} | Value: {row['Value']:,.2f} | Z-Score: {row['Z_Score']:+.2f}")
-                    total_anomalies += len(anomalies)
-                    
         if total_anomalies == 0:
             print("✅ No anomalies detected matching the threshold criteria.")
 

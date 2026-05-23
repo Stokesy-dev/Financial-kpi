@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 from data.generate_data import generate_synthetic_data
 from models.forecasting import train_and_forecast_all
 from database.db_interface import init_db, insert_transactions, query_aggregated_metrics
-from models.anomaly_detection import compute_univariate_zscore_anomalies
+from models.anomaly_detection import compute_univariate_zscore_anomalies, compute_combined_anomalies
 
 # Page configuration
 st.set_page_config(
@@ -453,7 +453,7 @@ with tab2:
         lower_mae = model_maes[best_model]
         st.success(f"🏆 **{best_model}** has the lowest MAE of **{lower_mae:,.2f}** on the validation quarter, indicating it has the lowest prediction error.")
 
-# TAB 3: Anomaly Dashboard (Moving Z-Score)
+# TAB 3: Anomaly Dashboard (Multivariate Isolation Forest & Combined Confidence Scores)
 with tab3:
     st.markdown("### Anomaly Detection Control Room")
     
@@ -465,9 +465,9 @@ with tab3:
             options=["strict", "standard", "lenient"],
             index=1,
             format_func=lambda x: {
-                "strict": "🔒 Strict (Z > 3.5)",
-                "standard": "⚖️ Standard (Z > 3.0)",
-                "lenient": "🔓 Lenient (Z > 2.0)"
+                "strict": "🔒 Strict (Z > 3.5, IF Contamination = 1%)",
+                "standard": "⚖️ Standard (Z > 3.0, IF Contamination = 3%)",
+                "lenient": "🔓 Lenient (Z > 2.0, IF Contamination = 5%)"
             }.get(x, x),
             key="anomaly_threshold_select"
         )
@@ -476,50 +476,79 @@ with tab3:
     st.markdown("<br>", unsafe_allow_html=True)
     
     threshold_map = {
-        "strict": 3.5,
-        "standard": 3.0,
-        "lenient": 2.0
+        "strict": (3.5, 0.01),
+        "standard": (3.0, 0.03),
+        "lenient": (2.0, 0.05)
     }
-    z_threshold = threshold_map[threshold_sel]
+    z_threshold, if_contamination = threshold_map[threshold_sel]
     
-    # Load aggregated metric with reindexing enabled to catch zero-value days/weeks/months
-    df_metric_reindexed = query_aggregated_metrics(DB_PATH, business_unit, metric, frequency, reindex_all_dates=True)
+    # Query all three daily metrics with reindexing enabled to align date timeline
+    df_rev = query_aggregated_metrics(DB_PATH, business_unit, 'revenue', frequency, reindex_all_dates=True)
+    df_cst = query_aggregated_metrics(DB_PATH, business_unit, 'cost', frequency, reindex_all_dates=True)
+    df_vol = query_aggregated_metrics(DB_PATH, business_unit, 'volume', frequency, reindex_all_dates=True)
     
-    if df_metric_reindexed.empty:
+    if df_rev.empty or df_cst.empty or df_vol.empty:
         st.warning("No data found for the selected options.")
     else:
-        # Run univariate anomaly detection
-        df_anom = compute_univariate_zscore_anomalies(df_metric_reindexed, window=30, threshold=z_threshold)
-        anomalies_only = df_anom[df_anom['Is_Anomaly'] == 1]
+        # Run combined anomaly detection
+        df_comb = compute_combined_anomalies(df_rev, df_cst, df_vol, z_threshold=z_threshold, contamination=if_contamination)
         
-        # Plotly time-series chart with flagged points highlight-colored
+        # Align selected metric's value to the Value column for Plotly
+        metric_col_map = {
+            'revenue': 'Revenue',
+            'cost': 'Cost',
+            'volume': 'Volume'
+        }
+        metric_col_name = metric_col_map[metric]
+        df_comb['Value'] = df_comb[metric_col_name]
+        
+        # Plotly time-series chart with flagged points highlight-colored by confidence
         fig_anom = go.Figure()
         
         # Line for actual values
         fig_anom.add_trace(go.Scatter(
-            x=df_anom['Date'],
-            y=df_anom['Value'],
+            x=df_comb['Date'],
+            y=df_comb['Value'],
             mode='lines',
             name='Actual Level',
             line=dict(color='#8b5cf6', width=2), # Violet theme for baseline
             hovertemplate="Date: %{x}<br>Value: %{y:,.2f}<extra></extra>"
         ))
         
-        # Scatter markers for anomalies
-        if not anomalies_only.empty:
-            fig_anom.add_trace(go.Scatter(
-                x=anomalies_only['Date'],
-                y=anomalies_only['Value'],
-                mode='markers',
-                name='Anomaly Flagged',
-                marker=dict(color='#ef4444', size=10, symbol='circle-open-dot', line=dict(width=2)),
-                hovertemplate="🚨 <b>Anomaly Detected</b><br>Date: %{x}<br>Value: %{y:,.2f}<br>Z-Score: %{customdata:+.2f}<extra></extra>",
-                customdata=anomalies_only['Z_Score']
-            ))
+        # Scatter markers for anomalies by confidence level
+        conf_meta = {
+            'High': {'color': '#ef4444', 'name': '🔴 High Confidence (Both)'},
+            'Medium': {'color': '#f97316', 'name': '🟠 Medium Confidence (IForest Only)'},
+            'Low': {'color': '#eab308', 'name': '🟡 Low Confidence (Z-Score Only)'}
+        }
+        
+        for confidence_level, meta in conf_meta.items():
+            df_level = df_comb[df_comb['Confidence'] == confidence_level]
+            if not df_level.empty:
+                custom_data_stack = np.stack([
+                    df_level['Z_Rev_Anomaly'],
+                    df_level['Z_Cst_Anomaly'],
+                    df_level['Z_Vol_Anomaly'],
+                    df_level['IForest_Anomaly']
+                ], axis=-1)
+                
+                fig_anom.add_trace(go.Scatter(
+                    x=df_level['Date'],
+                    y=df_level['Value'],
+                    mode='markers',
+                    name=meta['name'],
+                    marker=dict(color=meta['color'], size=10, symbol='circle-open-dot', line=dict(width=2)),
+                    customdata=custom_data_stack,
+                    hovertemplate="🚨 <b>" + confidence_level + " Confidence Anomaly</b><br>" +
+                                  "Date: %{x}<br>" +
+                                  "Value: %{y:,.2f}<br>" +
+                                  "Z-Score Flags: Rev=%{customdata[0]:.0f}, Cost=%{customdata[1]:.0f}, Vol=%{customdata[2]:.0f}<br>" +
+                                  "IForest Flag: %{customdata[3]:.0f}<extra></extra>"
+                ))
             
         fig_anom.update_layout(
             title=dict(
-                text=f"Historical Anomalies for {business_unit.upper()} {metric.upper()}",
+                text=f"Historical Anomalies & Confidence Levels for {business_unit.upper()} {metric.upper()}",
                 font=dict(size=18, family="Outfit")
             ),
             template='plotly_dark',
@@ -535,15 +564,23 @@ with tab3:
         
         # List anomalies in a clean search/table
         st.markdown("<h4 style='font-weight:600;'>Flagged Anomalies Log</h4>", unsafe_allow_html=True)
+        anomalies_only = df_comb[df_comb['Confidence'] != 'None']
+        
         if not anomalies_only.empty:
             st.markdown(f"Detected **{len(anomalies_only)}** anomaly events:")
             # Display summary table
-            display_df = anomalies_only[['Date', 'Value', 'Z_Score']].copy()
+            display_df = anomalies_only[['Date', 'Revenue', 'Cost', 'Volume', 'Z_Rev_Anomaly', 'Z_Cst_Anomaly', 'Z_Vol_Anomaly', 'IForest_Anomaly', 'Confidence']].copy()
             # Rename for display
-            display_df.columns = ['Date', 'Aggregated Value', 'Univariate Z-Score']
+            display_df.columns = ['Date', 'Revenue ($)', 'Cost ($)', 'Volume', 'Z-Rev Flag', 'Z-Cost Flag', 'Z-Vol Flag', 'IForest Flag', 'Confidence']
+            
             st.dataframe(display_df.style.format({
-                'Aggregated Value': '{:,.2f}',
-                'Univariate Z-Score': '{:+.2f}'
+                'Revenue ($)': '{:,.2f}',
+                'Cost ($)': '{:,.2f}',
+                'Volume': '{:,.0f}',
+                'Z-Rev Flag': '{:.0f}',
+                'Z-Cost Flag': '{:.0f}',
+                'Z-Vol Flag': '{:.0f}',
+                'IForest Flag': '{:.0f}'
             }), use_container_width=True, hide_index=True)
         else:
             st.success("✅ No anomalies detected for the selected period under this threshold.")
