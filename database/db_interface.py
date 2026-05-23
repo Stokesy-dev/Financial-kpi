@@ -80,7 +80,7 @@ def query_aggregated_metrics(db_path: str, bu: str, metric: str, frequency: str)
         SELECT {date_expr} AS Date, SUM({metric_col}) AS Value
         FROM transactions
         WHERE business_unit = ? AND type = ?
-        GROUP BY Date
+        GROUP BY {date_expr}
         ORDER BY Date ASC
     """
     

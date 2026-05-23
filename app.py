@@ -119,17 +119,25 @@ st.markdown("""
 # Sidebar Filter Section
 st.sidebar.markdown("<h2 style='font-weight: 600; font-size: 1.3rem; margin-bottom: 1rem;'>Control Panel</h2>", unsafe_allow_html=True)
 
-# Issue 1 filters (limited to E-commerce / Revenue as other units are implemented in Issue 2)
+# Control panel filters
 business_unit = st.sidebar.selectbox(
     "Business Unit",
-    options=["ecommerce"],
-    format_func=lambda x: "🛍️ E-commerce" if x == "ecommerce" else x
+    options=["ecommerce", "saas", "enterprise"],
+    format_func=lambda x: {
+        "ecommerce": "🛍️ E-commerce",
+        "saas": "💻 SaaS Subscription",
+        "enterprise": "🏢 Enterprise Services"
+    }.get(x, x)
 )
 
 metric = st.sidebar.selectbox(
     "Financial Metric",
-    options=["revenue", "volume"],
-    format_func=lambda x: "💰 Revenue ($)" if x == "revenue" else "📦 Volume (Units)" if x == "volume" else x
+    options=["revenue", "cost", "volume"],
+    format_func=lambda x: {
+        "revenue": "💰 Revenue ($)",
+        "cost": "💸 Cost ($)",
+        "volume": "📦 Volume (Units)"
+    }.get(x, x)
 )
 
 frequency = st.sidebar.selectbox(
@@ -146,7 +154,7 @@ if not df_metric.empty:
     total_val = df_metric['Value'].sum()
     avg_val = df_metric['Value'].mean()
     max_val = df_metric['Value'].max()
-    metric_unit = "$" if metric == "revenue" else ""
+    metric_unit = "$" if metric in ["revenue", "cost"] else ""
     
     # Display Stats Cards
     col1, col2, col3 = st.columns(3)
