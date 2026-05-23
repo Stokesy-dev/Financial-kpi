@@ -5,6 +5,7 @@ from data.generate_data import generate_synthetic_data
 from database.db_interface import init_db, insert_transactions, query_aggregated_metrics
 from models.forecasting import train_and_forecast_all
 from models.feature_engineering import create_forecasting_features
+from models.anomaly_detection import compute_univariate_zscore_anomalies
 
 def main():
     parser = argparse.ArgumentParser(description="Financial KPI Pipeline CLI")
@@ -124,11 +125,40 @@ def main():
         print(rf_fut.to_string(index=False))
         
     elif args.mode == "anomaly":
-        print(f"🛠️ Mode '{args.mode}' has been recognized.")
-        print(f"   Business Unit: {args.bu}")
-        print(f"   Metric       : {args.metric}")
-        print(f"   Threshold    : {args.threshold}")
-        print(f"🔮 Integration for anomaly detection is coming in Issue #6 and Issue #7.")
+        if not os.path.exists(args.db):
+            print(f"❌ Error: Database file '{args.db}' not found. Run --mode generate first.")
+            return
+
+        threshold_map = {
+            'strict': 3.5,
+            'standard': 3.0,
+            'lenient': 2.0
+        }
+        threshold_val = threshold_map.get(args.threshold or 'standard', 3.0)
+        
+        bus = [args.bu] if args.bu else ["ecommerce", "saas", "enterprise"]
+        metrics = [args.metric] if args.metric else ["revenue", "cost", "volume"]
+        
+        print(f"⚠️ Running Anomaly Detection Pipeline (Threshold: {args.threshold or 'standard'} [Z-Score > {threshold_val}])...")
+        
+        total_anomalies = 0
+        for bu in bus:
+            for metric in metrics:
+                df_metric = query_aggregated_metrics(args.db, bu=bu, metric=metric, frequency="D", reindex_all_dates=True)
+                if df_metric.empty:
+                    continue
+                
+                df_detected = compute_univariate_zscore_anomalies(df_metric, window=30, threshold=threshold_val)
+                anomalies = df_detected[df_detected['Is_Anomaly'] == 1]
+                
+                if not anomalies.empty:
+                    print(f"\n🚨 Business Unit: '{bu.upper()}', Metric: '{metric.upper()}' ({len(anomalies)} flagged):")
+                    for _, row in anomalies.iterrows():
+                        print(f"   Date: {row['Date']} | Value: {row['Value']:,.2f} | Z-Score: {row['Z_Score']:+.2f}")
+                    total_anomalies += len(anomalies)
+                    
+        if total_anomalies == 0:
+            print("✅ No anomalies detected matching the threshold criteria.")
 
 if __name__ == "__main__":
     main()

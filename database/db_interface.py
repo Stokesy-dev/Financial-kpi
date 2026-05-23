@@ -44,7 +44,8 @@ def insert_transactions(db_path: str, df: pd.DataFrame) -> None:
     df_to_insert.to_sql('transactions', conn, if_exists='append', index=False)
     conn.close()
 
-def query_aggregated_metrics(db_path: str, bu: str, metric: str, frequency: str) -> pd.DataFrame:
+
+def query_aggregated_metrics(db_path: str, bu: str, metric: str, frequency: str, reindex_all_dates: bool = False) -> pd.DataFrame:
     """
     Dynamically aggregates metrics (Revenue, Cost, Volume) from raw Transactions
     over a specified time frequency (daily, weekly, monthly) using SQL.
@@ -87,4 +88,30 @@ def query_aggregated_metrics(db_path: str, bu: str, metric: str, frequency: str)
     df_result = pd.read_sql_query(query, conn, params=[bu, type_filter])
     conn.close()
     
+    if reindex_all_dates and not df_result.empty:
+        df_result['Date'] = pd.to_datetime(df_result['Date'])
+        
+        # Fetch min/max dates from transactions table to align the complete range
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT MIN(date), MAX(date) FROM transactions")
+        db_min, db_max = cursor.fetchone()
+        conn.close()
+        
+        start_date = pd.to_datetime(db_min) if db_min else df_result['Date'].min()
+        end_date = pd.to_datetime(db_max) if db_max else df_result['Date'].max()
+        
+        if frequency == 'W':
+            start_date = start_date - pd.Timedelta(days=start_date.dayofweek)
+            end_date = end_date - pd.Timedelta(days=end_date.dayofweek)
+        elif frequency == 'M':
+            start_date = start_date.replace(day=1)
+            end_date = end_date.replace(day=1)
+            
+        pd_freq = 'MS' if frequency == 'M' else frequency
+        full_range = pd.date_range(start=start_date, end=end_date, freq=pd_freq)
+        df_result = df_result.set_index('Date').reindex(full_range, fill_value=0.0).reset_index()
+        df_result = df_result.rename(columns={'index': 'Date'})
+        df_result['Date'] = df_result['Date'].dt.strftime('%Y-%m-%d')
+        
     return df_result

@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 from data.generate_data import generate_synthetic_data
 from models.forecasting import train_and_forecast_all
 from database.db_interface import init_db, insert_transactions, query_aggregated_metrics
+from models.anomaly_detection import compute_univariate_zscore_anomalies
 
 # Page configuration
 st.set_page_config(
@@ -97,10 +98,25 @@ DB_PATH = "financial_kpi.db"
 # Bootstrapping helper
 @st.cache_resource
 def bootstrap_database(db_path):
-    """Initializes the database and seeds it with data if empty."""
+    """Initializes the database and seeds it with data if empty or outdated."""
+    if os.path.exists(db_path):
+        try:
+            conn = sqlite3.connect(db_path)
+            c = conn.cursor()
+            c.execute("SELECT COUNT(*) FROM transactions WHERE business_unit = 'saas' AND type = 'cost' AND amount > 500")
+            has_anoms = c.fetchone()[0] > 0
+            conn.close()
+            
+            if not has_anoms:
+                # Outdated DB without anomalies, delete and recreate
+                os.remove(db_path)
+        except Exception:
+            # If any database error occurs, clear it
+            if os.path.exists(db_path):
+                os.remove(db_path)
+                
     if not os.path.exists(db_path):
         init_db(db_path)
-        # Generate 3 years of daily transaction data for E-commerce revenue (Issue 1)
         df_seed = generate_synthetic_data(start_date="2023-01-01", end_date="2025-12-31")
         insert_transactions(db_path, df_seed)
         return True
@@ -437,10 +453,100 @@ with tab2:
         lower_mae = model_maes[best_model]
         st.success(f"🏆 **{best_model}** has the lowest MAE of **{lower_mae:,.2f}** on the validation quarter, indicating it has the lowest prediction error.")
 
-# TAB 3: Anomaly Dashboard (Stub)
+# TAB 3: Anomaly Dashboard (Moving Z-Score)
 with tab3:
     st.markdown("### Anomaly Detection Control Room")
-    st.info("⚠️ Anomaly detection layers (Isolation Forest and Z-Score thresholding) are coming soon in Issue #6 and Issue #7.")
+    
+    col_ctrl1, col_ctrl2 = st.columns([1, 3])
+    with col_ctrl1:
+        st.markdown("<div style='background:rgba(255,255,255,0.02); padding:1rem; border-radius:8px; border:1px solid rgba(255,255,255,0.05);'>", unsafe_allow_html=True)
+        threshold_sel = st.selectbox(
+            "Anomaly Sensitivity Threshold",
+            options=["strict", "standard", "lenient"],
+            index=1,
+            format_func=lambda x: {
+                "strict": "🔒 Strict (Z > 3.5)",
+                "standard": "⚖️ Standard (Z > 3.0)",
+                "lenient": "🔓 Lenient (Z > 2.0)"
+            }.get(x, x),
+            key="anomaly_threshold_select"
+        )
+        st.markdown("</div>", unsafe_allow_html=True)
+        
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    threshold_map = {
+        "strict": 3.5,
+        "standard": 3.0,
+        "lenient": 2.0
+    }
+    z_threshold = threshold_map[threshold_sel]
+    
+    # Load aggregated metric with reindexing enabled to catch zero-value days/weeks/months
+    df_metric_reindexed = query_aggregated_metrics(DB_PATH, business_unit, metric, frequency, reindex_all_dates=True)
+    
+    if df_metric_reindexed.empty:
+        st.warning("No data found for the selected options.")
+    else:
+        # Run univariate anomaly detection
+        df_anom = compute_univariate_zscore_anomalies(df_metric_reindexed, window=30, threshold=z_threshold)
+        anomalies_only = df_anom[df_anom['Is_Anomaly'] == 1]
+        
+        # Plotly time-series chart with flagged points highlight-colored
+        fig_anom = go.Figure()
+        
+        # Line for actual values
+        fig_anom.add_trace(go.Scatter(
+            x=df_anom['Date'],
+            y=df_anom['Value'],
+            mode='lines',
+            name='Actual Level',
+            line=dict(color='#8b5cf6', width=2), # Violet theme for baseline
+            hovertemplate="Date: %{x}<br>Value: %{y:,.2f}<extra></extra>"
+        ))
+        
+        # Scatter markers for anomalies
+        if not anomalies_only.empty:
+            fig_anom.add_trace(go.Scatter(
+                x=anomalies_only['Date'],
+                y=anomalies_only['Value'],
+                mode='markers',
+                name='Anomaly Flagged',
+                marker=dict(color='#ef4444', size=10, symbol='circle-open-dot', line=dict(width=2)),
+                hovertemplate="🚨 <b>Anomaly Detected</b><br>Date: %{x}<br>Value: %{y:,.2f}<br>Z-Score: %{customdata:+.2f}<extra></extra>",
+                customdata=anomalies_only['Z_Score']
+            ))
+            
+        fig_anom.update_layout(
+            title=dict(
+                text=f"Historical Anomalies for {business_unit.upper()} {metric.upper()}",
+                font=dict(size=18, family="Outfit")
+            ),
+            template='plotly_dark',
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            xaxis=dict(showgrid=False, title='Date'),
+            yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)', title='Value'),
+            margin=dict(l=20, r=20, t=50, b=20),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+        
+        st.plotly_chart(fig_anom, use_container_width=True)
+        
+        # List anomalies in a clean search/table
+        st.markdown("<h4 style='font-weight:600;'>Flagged Anomalies Log</h4>", unsafe_allow_html=True)
+        if not anomalies_only.empty:
+            st.markdown(f"Detected **{len(anomalies_only)}** anomaly events:")
+            # Display summary table
+            display_df = anomalies_only[['Date', 'Value', 'Z_Score']].copy()
+            # Rename for display
+            display_df.columns = ['Date', 'Aggregated Value', 'Univariate Z-Score']
+            st.dataframe(display_df.style.format({
+                'Aggregated Value': '{:,.2f}',
+                'Univariate Z-Score': '{:+.2f}'
+            }), use_container_width=True, hide_index=True)
+        else:
+            st.success("✅ No anomalies detected for the selected period under this threshold.")
 
 # TAB 4: Explainability (SHAP)
 with tab4:

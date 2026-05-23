@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 
-def generate_synthetic_data(start_date: str, end_date: str) -> pd.DataFrame:
+def generate_synthetic_data(start_date: str, end_date: str, inject_anomalies: bool = True) -> pd.DataFrame:
     """
     Generates synthetic daily transaction-level records for:
     - E-commerce (high frequency, lower deal size, weekly/annual seasonality, high cost of goods).
@@ -34,6 +34,18 @@ def generate_synthetic_data(start_date: str, end_date: str) -> pd.DataFrame:
         weekend_factor = 1.3 if day_of_week in [4, 5] else 0.85
         holiday_factor = 1.5 if month in [11, 12] else 0.9
         
+        # Determine anomaly flags if inject_anomalies is enabled
+        is_checkout_outage = False
+        is_cost_leak = False
+        is_pricing_glitch = False
+        is_contract_delay = False
+        
+        if inject_anomalies:
+            is_checkout_outage = (pd.Timestamp("2024-06-10") <= date <= pd.Timestamp("2024-06-15"))
+            is_cost_leak = (pd.Timestamp("2024-10-05") <= date <= pd.Timestamp("2024-10-15"))
+            is_pricing_glitch = (pd.Timestamp("2025-03-01") <= date <= pd.Timestamp("2025-03-05"))
+            is_contract_delay = (pd.Timestamp("2025-08-01") <= date <= pd.Timestamp("2025-08-31"))
+            
         # -------------------------------------------------------------
         # 1. E-COMMERCE GENERATION
         # -------------------------------------------------------------
@@ -41,16 +53,32 @@ def generate_synthetic_data(start_date: str, end_date: str) -> pd.DataFrame:
         cogs_rate = 0.70  # cost is ~70% of revenue
         
         # Revenue transactions
-        num_ecom_rev = int(np.random.poisson(25 * weekend_factor * holiday_factor * growth_factor))
-        for _ in range(max(1, num_ecom_rev)):
-            amount = np.random.normal(65.0, 15.0)
-            volume = int(np.random.randint(1, 4))
+        poisson_rate = 25 * weekend_factor * holiday_factor * growth_factor
+        if is_checkout_outage:
+            poisson_rate *= 0.05  # 95% dip in transactions
+        elif is_pricing_glitch:
+            poisson_rate *= 5.0   # 5x volume spike
+            
+        num_ecom_rev = int(np.random.poisson(poisson_rate))
+        
+        # In a checkout outage, we run a very low loop count. 
+        # Otherwise we run max(1, num_ecom_rev) to ensure activity.
+        loop_count = num_ecom_rev if is_checkout_outage else max(1, num_ecom_rev)
+        
+        for _ in range(loop_count):
+            if is_pricing_glitch:
+                amount = np.random.uniform(1.0, 3.0)  # low price glitch ($1 - $3)
+                volume = int(np.random.randint(1, 4))
+            else:
+                amount = np.random.normal(65.0, 15.0)
+                volume = int(np.random.randint(1, 4))
+                
             records.append({
                 'TransactionID': f"TXN-ECOMR-{date.strftime('%Y%m%d')}-{txn_id_counter:05d}",
                 'Date': date.strftime('%Y-%m-%d'),
                 'BusinessUnit': 'ecommerce',
                 'Type': 'revenue',
-                'Amount': max(5.0, round(amount, 2)),
+                'Amount': max(0.50 if is_pricing_glitch else 5.0, round(amount, 2)),
                 'Volume': max(1, volume)
             })
             txn_id_counter += 1
@@ -92,12 +120,17 @@ def generate_synthetic_data(start_date: str, end_date: str) -> pd.DataFrame:
             
         # Cost transactions (Hosting/Infrastructure) - very low, stable
         # 1 transaction per day
+        cost_amount = np.random.normal(80.0, 5.0)
+        if is_cost_leak:
+            # 10x cost spike + flat fee
+            cost_amount = cost_amount * 10.0 + np.random.uniform(200, 300)
+            
         records.append({
             'TransactionID': f"TXN-SAASC-{date.strftime('%Y%m%d')}-{txn_id_counter:05d}",
             'Date': date.strftime('%Y-%m-%d'),
             'BusinessUnit': 'saas',
             'Type': 'cost',
-            'Amount': max(10.0, round(np.random.normal(80.0, 5.0), 2)),
+            'Amount': max(10.0, round(cost_amount, 2)),
             'Volume': 1
         })
         txn_id_counter += 1
@@ -108,7 +141,8 @@ def generate_synthetic_data(start_date: str, end_date: str) -> pd.DataFrame:
         # Low frequency lumpy contract wins, very high transaction amounts
         
         # Revenue transactions (probability of closing a deal is 3.5% daily, approx 1 deal/month)
-        if np.random.random() < 0.035:
+        deal_prob = 0.0 if is_contract_delay else 0.035
+        if np.random.random() < deal_prob:
             amount = np.random.uniform(15000.0, 45000.0)
             records.append({
                 'TransactionID': f"TXN-ENTR-{date.strftime('%Y%m%d')}-{txn_id_counter:05d}",
